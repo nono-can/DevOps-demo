@@ -1,0 +1,81 @@
+name: CD (SSH) — Laravel -> Windows
+ 
+on:
+  push:
+    branches: [ main ]
+ 
+jobs:
+  build-and-deploy:
+    runs-on: windows-latest
+ 
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+ 
+      - name: Install PHP
+        uses: shivammathur/setup-php@v3
+        with:
+          php-version: '8.1'
+          extensions: mbstring, pdo, pdo_mysql, openssl
+ 
+      - name: Install Composer Dependencies
+        run: composer install --no-dev --optimize-autoloader
+ 
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+ 
+      - name: Build Assets
+        run: |
+          npm ci
+          npm run build
+ 
+      - name: Prepare Release Folder
+        run: |
+          $releasePath = "release"
+          # Suppression du dossier de release s'il existe
+          if (Test-Path $releasePath) { Remove-Item $releasePath -Recurse -Force }
+          # Création du nouveau dossier de release
+          New-Item -ItemType Directory -Path $releasePath
+ 
+          # Copie des fichiers, en excluant les dossiers inutiles
+          robocopy . $releasePath /MIR /XD node_modules .git storage vendor
+          
+          # Installation des dépendances de production dans le dossier de release (pour s'assurer que c'est propre)
+          composer install --no-dev --optimize-autoloader --working-dir=$releasePath
+ 
+      - name: Upload Files via SCP (recommandé pour SFTP)
+        uses: appleboy/scp-action@v0.1.7 # Utilisation de l'action scp pour un transfert simple
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_KEY }}
+          source: 'release/*'
+          target: '/apps/laravel-staging/' # Chemin SFTP cible
+          strip_components: 1 # Retirer le dossier 'release' du chemin cible
+ 
+      - name: Remote Deploy on Windows Server (via SSH)
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_KEY }}
+          script: |
+            # Définition des chemins PowerShell
+            $staging="C:\apps\laravel-staging"
+            $live="C:\apps\laravel-live"
+            
+            # Exécution des commandes Laravel (assurez-vous que PHP et Artisan sont accessibles dans le PATH de l'utilisateur SSH)
+            cd $staging
+            php artisan migrate --force
+            php artisan config:cache
+            php artisan route:cache
+            
+            # Rotation des dossiers pour le déploiement sans interruption
+            if (Test-Path $live) {
+              # Renommer l'ancienne version
+              Rename-Item $live ($live + "_old_" + (Get-Date -Format yyyyMMddHHmmss))
+            }
+            # Rendre la nouvelle version "live"
+            Rename-Item $staging $live
